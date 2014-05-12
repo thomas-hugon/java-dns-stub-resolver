@@ -30,11 +30,12 @@ public abstract class DnsClient implements AutoCloseable {
     });
 
     static {
+        eventLoop.setDaemon(true);
         eventLoop.start();
     }
 
-    private final Map<Integer, Request> awaitingSend = new ConcurrentHashMap<>();
-    private final Map<Integer, Request> awaitingReceive = new ConcurrentHashMap<>();
+    private final Map<Short, Request> awaitingSend = new ConcurrentHashMap<>();
+    private final Map<Short, Request> awaitingReceive = new ConcurrentHashMap<>();
 
     DnsClient() {
     }
@@ -42,22 +43,22 @@ public abstract class DnsClient implements AutoCloseable {
     protected abstract void sendNext(Request value) throws IOException;
 
     protected static class Request {
-        protected Request(String host, int id, CompletableFuture<InetAddress> future) {
+        protected Request(String host, short id, CompletableFuture<InetAddress> future) {
             this.host = host;
             this.id = id;
             this.future = future;
         }
 
         protected final String host;
-        protected final int id;
+        protected final short id;
         protected final CompletableFuture<InetAddress> future;
     }
 
     protected static class Response {
-        protected final int id;
-        protected final InetAddress inetAddress;
+        protected final short id;
+        protected final byte[] inetAddress;
 
-        protected Response(int id, InetAddress inetAddress) {
+        protected Response(short id, byte[] inetAddress) {
             this.id = id;
             this.inetAddress = inetAddress;
         }
@@ -66,9 +67,9 @@ public abstract class DnsClient implements AutoCloseable {
     abstract Response receiveNext() throws IOException;
 
     private void sendAll() {
-        Iterator<Map.Entry<Integer, Request>> iterator = awaitingSend.entrySet().iterator();
+        Iterator<Map.Entry<Short, Request>> iterator = awaitingSend.entrySet().iterator();
         while (iterator.hasNext()) {
-            Map.Entry<Integer, Request> next = iterator.next();
+            Map.Entry<Short, Request> next = iterator.next();
             awaitingReceive.put(next.getKey(), next.getValue());
             iterator.remove();
             try {
@@ -86,7 +87,12 @@ public abstract class DnsClient implements AutoCloseable {
             while ((next = receiveNext()) != null) {
                 Request request = awaitingReceive.remove(next.id);
                 if (request != null) {
-                    request.future.complete(next.inetAddress);
+                    try {
+                        InetAddress byAddress = next.inetAddress == null ? null : InetAddress.getByAddress(next.inetAddress);
+                        request.future.complete(byAddress);
+                    } catch (Exception e) {
+                        request.future.completeExceptionally(e);
+                    }
                 }
             }
         } catch (Exception e) {
@@ -95,7 +101,7 @@ public abstract class DnsClient implements AutoCloseable {
     }
 
     public CompletableFuture<InetAddress> resolve(String host) {
-        int id;
+        short id;
         final CompletableFuture<InetAddress> future = new CompletableFuture<>();
         do {
             id = nextId();
@@ -103,10 +109,10 @@ public abstract class DnsClient implements AutoCloseable {
         return future;
     }
 
-    private int nextId() {
-        int id;
+    private short nextId() {
+        short id;
         do {
-            id = ThreadLocalRandom.current().nextInt(0xFFFF);
+            id = (short) ThreadLocalRandom.current().nextInt(Short.MIN_VALUE, Short.MAX_VALUE + 1);
         } while (awaitingSend.containsKey(id) || awaitingReceive.containsKey(id));
         return id;
     }
